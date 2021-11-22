@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+
+'Swap sequences within Fasta files in order to simulate contamination.'
+
+import argparse
+import sys
+import os
+import fasta
+import swap
+SWAP_PCT = 0.05
+VERSION = '0.0.1'
+FASTA_EXTENSIONS = {'.fa', '.fas', '.fasta', '.fna', '.faa', '.fsa', '.ffn',
+                    '.frn'}
+
+def per_alignment_swap(msa, receivers, swap_count=0, replace=False):
+    '''Takes a MultipleSequenceAlignment object, a list of OTUs, a swap count
+    and a replace flag as an input. If the number of swaps is greater than 0,
+    then randomly select that number of sequences from the provided alignment
+    and redistribute these sequences to the provided OTUs. If the replace flag
+    is used, however, only replace as many sequences as there are receivers
+    present within the provided alignment.
+    '''
+    if replace:
+        return swap.replace_receiver_seqs(msa, receivers)
+
+    otus = swap.pick_otus_randomly(msa, swap_count, receivers)
+    seqs = swap.get_seqs_from_otus(msa, otus)
+    seqs_before = len(msa.sequences)
+    swap.remove_seqs_from_otu(msa, otus)
+    seqs_after = len(msa.sequences)
+
+    print('-> swapping {} sequences in the alignment {}'.format(
+        seqs_before - seqs_after, msa))
+    print('-> randomly assigning the {} sequences to {} taxa'.format(
+        seqs_before - seqs_after, len(receivers)))
+
+    msa = swap.randomly_assign_seqs(msa, seqs, receivers)
+    return msa
+
+def get_fasta_files_from_dir(directory):
+    '''Takes the path to a directory as an input. Yield the absolute path to
+    each file which has a filetype extension that matches one of the valid
+    Fasta formats.
+    '''
+    if not os.path.isdir(directory):
+        print('error: input directory {} does not exist'.format(directory))
+        sys.exit()
+
+    abs_path = os.path.abspath(directory) + '/'
+
+    for file in os.listdir(directory):
+        extension = os.path.splitext(file)[1]
+        extension = extension.lower()
+
+        if extension in FASTA_EXTENSIONS:
+            yield abs_path + file
+
+def parse_args():
+    'Parse the arguments provided by the user.'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('-v', '-V', '--version',
+                        action='version',
+                        version=VERSION,
+                        help='display the version number and exit')
+    parser.add_argument('--dir',
+                        metavar='<path>',
+                        default=None,
+                        type=str,
+                        help='a directory that contains the input MSAs')
+    parser.add_argument('--output',
+                        metavar='<path>',
+                        type=str,
+                        default=None,
+                        help='save output files to this directory instead of \
+                              the input directory')
+    parser.add_argument('--wrap',
+                        metavar='<column>',
+                        default=None,
+                        type=int,
+                        help='wrap output sequences at this column instead \
+                              of writing each sequence to a single line')
+    parser.add_argument('--swap-count',
+                        metavar='<value>',
+                        default=None,
+                        type=int,
+                        help='randomly choose this number of sequences \
+                                and assign them to the designated receivers')
+    parser.add_argument('--cross-contaminate',
+                        default=False,
+                        action='store_true',
+                        help='create a copy of a receiver\'s sequence, \
+                              randomly rearrange some of its bases and \
+                              assign it to another species')
+    parser.add_argument('--contamination-likelihood',
+                        metavar='<likelihood>',
+                        default=0.1,
+                        type=float,
+                        help='set how likely it is that a receiver\'s \
+                              sequence is contaminated in an alignment; \
+                              DEFAULT: 0.1')
+    parser.add_argument('--max-substitutions',
+                        metavar='<amount>',
+                        default=30,
+                        type=int,
+                        help='set how many substitutions that are maximally \
+                              allowed in case of cross-contamination; \
+                              DEFAULT: 30')
+    parser.add_argument('--receivers',
+                        nargs='+',
+                        metavar='OTU',
+                        default=[],
+                        type=str,
+                        help='a list of OTUs which sequences will be \
+                                assigned to')
+    parser.add_argument('--replace',
+                        default=False,
+                        action='store_true',
+                        help='instead of always assigning a fixed number \
+                              of sequences to the receiver, replace the \
+                              receivers sequences with randomly chosen \
+                              sequences')
+    return parser.parse_args(args=None if sys.argv[1:] else ['--help'])
+
+def verify_args(args):
+    '''Test to see if the provided arguments are valid and compatible with \
+    eachother.
+    '''
+    if args.replace and args.swap_count:
+        print('error: \'--swap-count\' and \'--replace\' can\'t be used \
+together')
+        sys.exit()
+
+    if not args.receivers:
+        print('error: no designated receivers')
+        sys.exit()
+
+    if not args.dir:
+        print('error: no directory has been provided')
+        sys.exit()
+
+def main():
+    'Swap the user-provided sequences according to the provided parameters.'
+    args = parse_args()
+    verify_args(args)
+
+    # set the output directory and create it if necessary.
+    if not args.output:
+        output_dir = args.dir.rstrip('/')
+        output_dir = os.path.abspath(output_dir) + '/seqexchange_output'
+    else:
+        output_dir = args.output.rstrip('/')
+        output_dir = os.path.abspath(output_dir) + '/seqexchange_output'
+
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+
+    # make the exchange for each alignment within the input directory.
+    for alignment in get_fasta_files_from_dir(args.dir):
+        msa = fasta.read(alignment)
+        per_alignment_swap(msa, args.receivers, args.swap_count, args.replace)
+
+        if args.cross_contaminate:
+            msa = swap.cross_contaminate(
+                msa, args.receivers, args.contamination_likelihood,
+                args.max_substitutions)
+
+        filename = os.path.basename(msa.filename)
+        msa.filename = output_dir.rstrip('/') + '/' + filename
+        fasta.write(msa, args.wrap)
+
+if __name__ == '__main__':
+    main()
